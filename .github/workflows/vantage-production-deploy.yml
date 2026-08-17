@@ -1,0 +1,20 @@
+name: Vantage Production API Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Safe Deploy Vantage Production API
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "D:\Vantage App\scripts\deploy-vantage-api.ps1"

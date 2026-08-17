@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+Logs/
+logger/
+
+# Archives / compressed files
+*.zip
+*.rar
+*.iso
+
+# Images / media
+*.png
+*.jpeg
+*.jpg
+*.jfif
+*.webp
+*.gif
+*.mp4
+*.svg
+
+# Documents
+*.txt
+*.rtf
+*.chm
+*.docx
+*.doc
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.pdf
+
+# Executables / binaries
+*.exe
+*.dll
+*.bin
+*.msi
+*.apk
+*.bat
+*.cmd
+*.sh
+
+# Database / local files
+*.db
+*.sql
+*.ini
+
+# Project-generated folders/files
+changes/
+uploads/
+
+# Certificates / keys / service credentials
+utilities/dbConfig.js
+utilities/logger.js
+utilities/dbModule.js
+utilities/dbMongo.js
+utilities/webca.crt
+utilities/webcert.crt
+utilities/webkey.key
+utilities/socket.js
+utilities/socketUser.js
+utilities/serviceAccountKey.json
+utilities/serviceAccountKeyStudent.json.git_backup/

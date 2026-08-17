@@ -1,0 +1,179 @@
+﻿const mm = require('../../utilities/globalModule');
+const logger = require("../../utilities/logger");
+const { validationResult, body } = require('express-validator');
+const systemLog = require("../../modules/systemLog")
+const dbm = require('../../utilities/dbMongo');
+const applicationkey = process.env.APPLICATION_KEY;
+var couponCodeCountryMapping = "coupon_code_territory_mapping";
+var viewCouponCodeCountryMapping = "view_" + couponCodeCountryMapping;
+
+function reqData(req) {
+    var data = {
+        COUPON_ID: req.body.COUPON_ID,
+        TERRITORY_ID: req.body.TERRITORY_ID,
+        COUNTRY_ID: req.body.COUNTRY_ID,
+        STATUS: req.body.STATUS ? '1' : '0',
+        CLIENT_ID: req.body.CLIENT_ID
+    }
+    return data;
+}
+
+exports.validate = function () {
+    return [
+
+        body('ID').optional(),
+    ]
+}
+
+exports.get = (req, res) => {
+   const supportKey = req.headers['supportkey'];
+    var pageIndex = req.body.pageIndex ? req.body.pageIndex : '';
+    var pageSize = req.body.pageSize ? req.body.pageSize : '';
+    let sortKey = req.body.sortKey ? req.body.sortKey : 'ID';
+    let sortValue = req.body.sortValue ? req.body.sortValue : 'DESC';
+    let filter = req.body.filter ? req.body.filter : '';
+
+    filter = (filter || '').trim();
+    const safeFilter = (filter || '').replace(/'/g, "\\'");
+
+    const setContext = `
+        SET @v_PAGE_INDEX = ${pageIndex || 0};
+        SET @v_PAGE_SIZE = ${pageSize || 0};
+        SET @v_SORT_KEY = '${sortKey}';
+        SET @v_SORT_VALUE = '${sortValue}';
+        SET @v_FILTER = '${safeFilter}';
+    `;
+    const IS_FILTER_WRONG = mm.sanitizeFilter(filter);
+    try {
+        if (IS_FILTER_WRONG !== "0") {
+            return res.status(400).json({
+                "code": 400,
+                 "message": "Invalid filter parameter."
+            });
+        }
+
+
+        mm.executeQueryData(
+            setContext+'CALL sp_couponCodeTerritoryMapping_get()',
+            [],
+            supportKey,
+            (error, results) => {
+                if (error) {
+                     console.log("error",error)
+                    return res.status(400).send({ "code": 400,  "message": 'Failed to fetch team' });
+                }
+                const resultSets = results.filter(r => Array.isArray(r));
+                const countResult = resultSets[0] || [];
+                const dataResult = resultSets[1] || [];
+
+                return res.status(200).json({
+                    "code": 200,
+                    "message": "success",
+                    "TAB_ID": 2,
+                    "count": countResult[0] ? countResult[0].cnt : 0,
+                    "data": dataResult
+                });
+            }
+        );
+    } catch (e) {
+        console.log("Error in catch", e)
+        res.status(500).send({ "code": 500,  "message": 'Something went wrong' });
+    }
+};
+
+exports.create = (req, res) => {
+    const errors = validationResult(req);
+    const d = reqData(req);
+    const supportKey = req.headers['supportkey'];
+
+    if (!errors.isEmpty()) {
+        return res.send({ code: 422, message: errors.errors });
+    }
+
+    mm.executeQueryData(
+        `CALL sp_couponCodeTerritoryMapping_create(?,?,?,?,?)`,
+        [
+            d.COUPON_ID,
+            d.TERRITORY_ID,
+            d.COUNTRY_ID,
+            d.STATUS,
+            d.CLIENT_ID
+        ],
+        supportKey,
+        (error, result) => {
+            if (error) {
+                return res.send({
+                    code: 400,
+                    message: "Failed to save couponCodeCountryMapping information..."
+                });
+            }
+
+            // ✅ Mongo stays same
+            var ACTION_DETAILS = `User ${req.body.authData.data.UserData[0].NAME} has mapped a new coupon to the service.`;
+            let actionLog = {
+                SOURCE_ID: result[0][0].INSERT_ID,
+                LOG_DATE_TIME: mm.getSystemDate(),
+                LOG_TEXT: ACTION_DETAILS,
+                CATEGORY: "CouponCodeCountryMapping",
+                CLIENT_ID: 1,
+                USER_ID: req.body.authData.data.UserData[0].USER_ID,
+                supportKey: 0
+            };
+            dbm.saveLog(actionLog, systemLog);
+
+            res.send({
+                code: 200,
+                message: "CouponCodeCountryMapping information saved successfully..."
+            });
+        }
+    );
+};
+
+exports.update = (req, res) => {
+    const errors = validationResult(req);
+    const d = reqData(req);
+    const supportKey = req.headers['supportkey'];
+
+    if (!errors.isEmpty()) {
+        return res.send({ code: 422, message: errors.errors });
+    }
+
+    mm.executeQueryData(
+        `CALL sp_couponCodeTerritoryMapping_update(?,?,?,?,?,?)`,
+        [
+            req.body.ID,
+            d.COUPON_ID,
+            d.TERRITORY_ID,
+            d.COUNTRY_ID,
+            d.STATUS,
+            d.CLIENT_ID
+        ],
+        supportKey,
+        (error) => {
+            if (error) {
+                return res.send({
+                    code: 400,
+                    message: "Failed to update couponCodeCountryMapping information."
+                });
+            }
+
+            // ✅ Mongo stays same
+            var ACTION_DETAILS = `User ${req.body.authData.data.UserData[0].NAME} has updated the details of service coupon mapping.`;
+            let actionLog = {
+                SOURCE_ID: req.body.ID,
+                LOG_DATE_TIME: mm.getSystemDate(),
+                LOG_TEXT: ACTION_DETAILS,
+                CATEGORY: "CouponCodeCountryMapping",
+                CLIENT_ID: 1,
+                USER_ID: req.body.authData.data.UserData[0].USER_ID,
+                supportKey: 0
+            };
+            dbm.saveLog(actionLog, systemLog);
+
+            res.send({
+                code: 200,
+                message: "CouponCodeCountryMapping information updated successfully..."
+            });
+        }
+    );
+};
