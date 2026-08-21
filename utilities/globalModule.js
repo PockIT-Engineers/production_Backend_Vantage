@@ -82,12 +82,20 @@ exports.executeQueryData = (query, data, supportKey, callback) => {
 exports.openConnection = () => {
     try {
         const con = mysql.createConnection(config);
-        con.connect(async (err) => {
-            if (err) throw err;
-            await ensureUTC(con);
-            con.beginTransaction(err => {
-                if (err) throw err;
-            });
+        // Session setup has to be queued synchronously, before this function returns.
+        // mysql2's connect() only registers listeners - it queues nothing - so the
+        // SET time_zone / START TRANSACTION that used to live in its callback were
+        // queued only after the handshake, i.e. AFTER the caller had already queued
+        // its first statements. Those statements ran in autocommit, outside the
+        // transaction, so a later rollback could not undo them.
+        con.on('error', err => {
+            console.error("MySQL connection error:", err);
+        });
+        con.query("SET time_zone = '+00:00'", err => {
+            if (err) console.error("Failed to set UTC timezone:", err);
+        });
+        con.query('START TRANSACTION', err => {
+            if (err) console.error("Failed to start transaction:", err);
         });
         return con;
     } catch (error) {
@@ -2139,3 +2147,133 @@ exports.hashPassword = (password) => {
 
 
 
+
+/**
+ * Offline-capable event timestamps.
+ *
+ * The technician app can start / pause / resume / complete a work order with no
+ * network coverage. Those actions are queued on the device and replayed when the
+ * technician is back in signal - possibly hours later. Stamping them with
+ * getSystemDate() at that point records when the *sync* happened, not when the
+ * work happened, which is why start/pause/resume used to land on the same
+ * minute for an offline job.
+ *
+ * The app therefore sends the device time with every status change:
+ *   JOB_STARTED_DATETIME      'YYYY-MM-DD HH:mm:ss' in UTC (also inside JOB_DATA[0])
+ *   EVENT_AT_UTC              ISO-8601 UTC of the moment the technician tapped
+ *   EVENT_AT_UTC_CORRECTED    the same instant adjusted for measured clock drift
+ *   DEVICE_CLOCK_TRUSTED      false when the device clock is more than 3 min out
+ *   CAPTURED_OFFLINE          true when the action was performed with no coverage
+ *
+ * A device clock is not trustworthy on its own, so the value is validated before
+ * it is accepted; anything missing, unparseable, in the future or implausibly
+ * old falls back to server time.
+ */
+
+/** A device time may run this far ahead of the server before we reject it. */
+const EVENT_DATE_MAX_FUTURE_MS = 2 * 60 * 1000;
+/** Queued work older than this is treated as a broken clock, not a long trip. */
+const EVENT_DATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+const toUTCSqlDate = function (date) {
+    const year = date.getUTCFullYear();
+    const month = ("0" + (date.getUTCMonth() + 1)).slice(-2);
+    const day = ("0" + date.getUTCDate()).slice(-2);
+    const hours = ("0" + date.getUTCHours()).slice(-2);
+    const minutes = ("0" + date.getUTCMinutes()).slice(-2);
+    const seconds = ("0" + date.getUTCSeconds()).slice(-2);
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+};
+
+/**
+ * Picks the device-supplied timestamp for `columnName` out of the request body.
+ *
+ * Only offline-aware clients are trusted here. JOB_DATA[0] is the full job
+ * record as the client last saw it, so it can carry a stale JOB_*_DATETIME from
+ * an earlier cycle; it is read only when the client explicitly declared that
+ * this is the column it stamped for this event (STATUS_DATETIME_COLUMN). Any
+ * other caller - admin panel, older app build - gets server time exactly as
+ * before.
+ */
+const pickEventCandidate = function (body, columnName) {
+    const isOfflineAwareClient = Boolean(body.EVENT_AT_UTC || body.OFFLINE_TXN_ID);
+    if (!isOfflineAwareClient) {
+        return null;
+    }
+
+    // A device that knows its own clock is wrong tells us by how much.
+    if (body.DEVICE_CLOCK_TRUSTED === false && body.EVENT_AT_UTC_CORRECTED) {
+        return body.EVENT_AT_UTC_CORRECTED;
+    }
+
+    const declaredColumn = body.STATUS_DATETIME_COLUMN;
+    if (columnName && declaredColumn === columnName) {
+        if (body[columnName]) {
+            return body[columnName];
+        }
+        if (Array.isArray(body.JOB_DATA) && body.JOB_DATA[0] && body.JOB_DATA[0][columnName]) {
+            return body.JOB_DATA[0][columnName];
+        }
+    }
+
+    // No column-specific stamp (a report submission, say) - use the moment the
+    // technician performed the action.
+    return body.EVENT_AT_UTC || null;
+};
+
+/**
+ * Same resolution as resolveEventDate, returned as a Date rather than a SQL
+ * string - for the Mongo activity log, which stores a real date. Keeping both
+ * on one source means a log line can never disagree with the JOB_*_DATETIME
+ * column written by the same request.
+ */
+exports.resolveEventDateObject = function (body, columnName) {
+    const resolved = exports.resolveEventDate(body, columnName);
+    const parsed = new Date(String(resolved).replace(' ', 'T') + 'Z');
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
+/**
+ * Returns the UTC 'YYYY-MM-DD HH:mm:ss' this event should be recorded at:
+ * the technician's device time when it is present and plausible, otherwise
+ * server time exactly as before. Safe to use on every status change - a client
+ * that sends nothing keeps the old behaviour.
+ */
+exports.resolveEventDate = function (body, columnName) {
+    const systemDate = exports.getSystemDate();
+    if (!body || typeof body !== 'object') {
+        return systemDate;
+    }
+
+    const candidate = pickEventCandidate(body, columnName);
+    if (!candidate) {
+        return systemDate;
+    }
+
+    // 'YYYY-MM-DD HH:mm:ss' carries no zone marker but is UTC by contract.
+    const normalised = typeof candidate === 'string' && candidate.indexOf('T') === -1
+        ? candidate.trim().replace(' ', 'T') + 'Z'
+        : candidate;
+
+    const eventMs = Date.parse(normalised);
+    if (isNaN(eventMs)) {
+        console.warn(`[eventDate] ${columnName}: unparseable device time "${candidate}", using server time`);
+        return systemDate;
+    }
+
+    const now = Date.now();
+    if (eventMs > now + EVENT_DATE_MAX_FUTURE_MS) {
+        console.warn(`[eventDate] ${columnName}: device time "${candidate}" is in the future, using server time`);
+        return systemDate;
+    }
+    if (eventMs < now - EVENT_DATE_MAX_AGE_MS) {
+        console.warn(`[eventDate] ${columnName}: device time "${candidate}" is implausibly old, using server time`);
+        return systemDate;
+    }
+
+    const resolved = toUTCSqlDate(new Date(eventMs));
+    if (resolved !== systemDate) {
+        console.log(`[eventDate] ${columnName}: using device time ${resolved} (server time ${systemDate}, offlineCapture=${body.CAPTURED_OFFLINE === true})`);
+    }
+    return resolved;
+};

@@ -35,6 +35,7 @@ exports.validate = function () {
 }
 
 exports.get = (req, res) => {
+    console.log("Testing CICD");
     const supportKey = req.headers['supportkey'];
 
     let pageIndex = req.body.pageIndex ? req.body.pageIndex : '';

@@ -4558,7 +4558,12 @@ exports.updateJobStatus = (req, res) => {
         return;
     }
     var getUTCfromTimeZone = mm.getUTCFromTimezone(IANA_CODE);
-    let MongoLogDate = mm.getUTCDateFromTimezone(IANA_CODE);
+    // The moment the technician tapped the button, resolved once so the status
+    // column and the activity-log line for this request always agree. Falls back
+    // to server time for callers that send no device stamp (the admin panel).
+    const EVENT_DATETIME_COLUMN = { ST: 'JOB_INTIATED_DATETIME', RD: 'JOB_ARRIVED_DATETIME', SJ: 'JOB_STARTED_DATETIME', PJ: 'JOB_PAUSED_DATETIME', RJ: 'JOB_RESUMED_DATETIME', EJ: 'JOB_COMPLETED_DATETIME', CO: 'JOB_COMPLETED_DATETIME' };
+    const eventDate = mm.resolveEventDate(req.body, EVENT_DATETIME_COLUMN[STATUS] || null);
+    let MongoLogDate = mm.resolveEventDateObject(req.body, EVENT_DATETIME_COLUMN[STATUS] || null);
 
     if (!TECHNICIAN_ID || !ORDER_ID || !STATUS || !ID || !SERVICE_ID) {
         return res.send({
@@ -4581,6 +4586,10 @@ exports.updateJobStatus = (req, res) => {
         let recordData = [];
         let ORDER_STATUS = '';
 
+        // The technician app can perform these actions with no coverage and sync
+        // them later, so each event datetime comes from the device when it sent
+        // one. mm.resolveEventDate validates it and falls back to server time,
+        // which keeps older clients working exactly as before.
         if (STATUS === "AC" || STATUS === "AS") {
             setData += "JOB_STATUS_ID = ?, TECHNICIAN_STATUS = ?, ";
             recordData.push(2, "AS");
@@ -4590,26 +4599,26 @@ exports.updateJobStatus = (req, res) => {
             recordData.push("ON");
         } else if (STATUS === "CO" || STATUS === "EJ") {
             setData += "TRACK_STATUS = ?, TECHNICIAN_STATUS = ?, JOB_STATUS_ID = ?,JOB_COMPLETED_DATETIME = ?, USED_TIME = ?, REMARK = ?";
-            recordData.push("EJ", "CO", 3, mm.getSystemDate(), JOB_DATA[0].USED_TIME, REMARK);
+            recordData.push("EJ", "CO", 3, eventDate, JOB_DATA[0].USED_TIME, REMARK);
         } else if (STATUS === "ST") {
             setData += "TRACK_STATUS = ?, JOB_INTIATED_DATETIME = ?,";
-            recordData.push("ST", mm.getSystemDate());
+            recordData.push("ST", mm.resolveEventDate(req.body, 'JOB_INTIATED_DATETIME'));
         } else if (STATUS === "RD") {
             setData += "TRACK_STATUS = ?, TECHNICIAN_STATUS = ?, JOB_ARRIVED_DATETIME = ?,";
             ORDER_STATUS = "ON";
-            recordData.push("RD", "ON", mm.getSystemDate());
+            recordData.push("RD", "ON", mm.resolveEventDate(req.body, 'JOB_ARRIVED_DATETIME'));
         } else if (STATUS === "SJ") {
             setData += "TRACK_STATUS = ?, JOB_STARTED_DATETIME = ?,";
-            recordData.push("SJ", mm.getSystemDate());
+            recordData.push("SJ", mm.resolveEventDate(req.body, 'JOB_STARTED_DATETIME'));
         } else if (STATUS === "EJ") {
             setData += "TRACK_STATUS = ?, TECHNICIAN_STATUS = ?, JOB_STATUS_ID = ?,JOB_COMPLETED_DATETIME = ?, USED_TIME = ?, REMARK = ?";
-            recordData.push("EJ", "CO", 3, mm.getSystemDate(), JOB_DATA[0].USED_TIME, REMARK);
+            recordData.push("EJ", "CO", 3, mm.resolveEventDate(req.body, 'JOB_COMPLETED_DATETIME'), JOB_DATA[0].USED_TIME, REMARK);
         } else if (STATUS === "PJ") {
             setData += "TRACK_STATUS = ?, USED_TIME = ?,JOB_PAUSED_DATETIME = ?,";
-            recordData.push("PJ", JOB_DATA[0].USED_TIME, mm.getSystemDate());
+            recordData.push("PJ", JOB_DATA[0].USED_TIME, mm.resolveEventDate(req.body, 'JOB_PAUSED_DATETIME'));
         } else if (STATUS === "RJ") {
             setData += "TRACK_STATUS = ?,JOB_RESUMED_DATETIME = ?,";
-            recordData.push("SJ", mm.getSystemDate());
+            recordData.push("SJ", mm.resolveEventDate(req.body, 'JOB_RESUMED_DATETIME'));
         } else {
             return res.send({
                 "code": 400,
@@ -4960,7 +4969,7 @@ exports.updateJobStatus = (req, res) => {
                                             ID,
                                             USER_ID,
                                             STATUS,
-                                            systemDate
+                                            eventDate
                                         ],
                                         supportKey,
                                         connection,
@@ -5010,7 +5019,7 @@ exports.updateJobStatus = (req, res) => {
                             SERVICE_ID,
                             TECHNICIAN_ID,
                             "SJ",
-                            systemDate
+                            eventDate
                         ],
                         supportKey,
                         connection,
@@ -5054,7 +5063,7 @@ exports.updateJobStatus = (req, res) => {
                             STATUS,
                             TRACK_STATUS,
                             JOB_DATA[0].USED_TIME,
-                            mm.getSystemDate(),
+                            eventDate,
                             ACTION_DETAILS
                         ],
                         supportKey,
@@ -5102,7 +5111,7 @@ exports.updateJobStatus = (req, res) => {
                             JOB_DATA[0].SERVICE_ID,
                             JOB_DATA[0].TECHNICIAN_ID,
                             STATUS,
-                            systemDate,
+                            eventDate,
                             REMARK
                         ],
                         supportKey,

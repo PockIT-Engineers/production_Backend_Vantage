@@ -842,6 +842,18 @@ exports.orderUpdateStatus = (req, res) => {
                                         message: "Service data is required."
                                     });
                                 }
+                                // A double-wrapped ORDER_JOB_DATA ([[{...}]]) used to slip
+                                // through here: serviceData[0] was an array, every job card
+                                // field read as undefined and Sp_InsertJobCard failed with an
+                                // opaque DB error. Reject the bad shape with a clear message.
+                                if (Array.isArray(serviceData[0]) || typeof serviceData[0] !== 'object' || serviceData[0] === null || !serviceData[0].ORDER_DETAILS_ID) {
+                                    mm.rollbackConnection(connection);
+                                    console.log(`Invalid service data.`, JSON.stringify(serviceData[0]));
+                                    return res.send({
+                                        code: 400,
+                                        message: "Invalid service data for work order(job) creation."
+                                    });
+                                }
                                 async.eachSeries(SERVICE_ITEM_IDS, function processTechnician(Services, inner_callback) {
                                     // Same atomic allocation the order number uses. The old
                                     // Sp_GetLastJobCardNo read took no lock, so two orders
